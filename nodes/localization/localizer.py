@@ -30,9 +30,48 @@ class Localizer:
         self.current_pose_pub = rospy.Publisher('current_pose', PoseStamped, queue_size=10)
         self.current_velocity_pub = rospy.Publisher('current_velocity', TwistStamped, queue_size=10)
         self.br = TransformBroadcaster()
+        
+        # create coordinate transformer
+        self.transformer = Transformer.from_crs(self.crs_wgs84, self.crs_utm)
+        self.origin_x, self.origin_y = self.transformer.transform(utm_origin_lat, utm_origin_lon)
+        
 
+    # convert azimuth to yaw angle
+    def convert_azimuth_to_yaw(azimuth):
+        yaw = -azimuth + math.pi/2
+        # Clamp within 0 to 2 pi
+        if yaw > 2 * math.pi:
+           yaw = yaw - 2 * math.pi
+        elif yaw < 0:
+           yaw += 2 * math.pi
+
+        return yaw
+        
     def transform_coordinates(self, msg):
-        print(msg.latitude, msg.longitude)
+        latitude, longitude = self.transformer.transform(msg.latitude, msg.longitude)
+        print(latitude - self.origin_x, longitude - self.origin_y)
+        
+                # calculate azimuth correction
+        azimuth_correction = self.utm_projection.get_factors(msg.longitude,msg.latitude).meridian_convergence
+        
+        azimuth = msg.azimuth - azimuth_correction
+        
+        yaw = convert_azimuth_to_yaw(azimuth)
+        
+        # Convert yaw to quaternion
+        x, y, z, w = quaternion_from_euler(0, 0, yaw)
+        orientation = Quaternion(x, y, z, w)
+        
+        # publish current pose
+        current_pose_msg = PoseStamped()
+        current_pose_msg.header.stamp = msg.header.stamp
+        current_pose_msg.header.frame_id = 'map'
+        current_pose_msg.pose.position.x = x
+        current_pose_msg.pose.position.y = y
+        current_pose_msg.pose.position.z = z
+        current_pose_msg.pose.orientation = orientation
+        self.current_pose_pub.publish(current_pose_msg)
+        
 
     def run(self):
         rospy.spin()
