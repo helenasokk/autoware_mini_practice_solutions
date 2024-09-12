@@ -73,10 +73,22 @@ class Localizer:
         current_pose_msg.pose.orientation = orientation
         self.current_pose_pub.publish(current_pose_msg)
         
+        self.publish_transform(current_pose_msg)
+        
     def publish_transform(self, pose_msg):
     	t = TransformStamped()
     	
-    	t.header.stamp = pose.msg.header.stamp
+    	t.header.stamp = pose_msg.header.stamp
+    	t.header.frame_id = "map"
+    	t.child_frame_id = "base_link"
+    	
+    	t.transform.translation.x = pose_msg.pose.position.x
+    	t.transform.translation.y = pose_msg.pose.position.y
+    	t.transform.translation.z = pose_msg.pose.position.z
+    	
+    	t.transform.rotation = pose_msg.pose.orientation
+    	
+    	self.br.sendTransform(t)
         
     def transform_velocity(self, msg):
         # Calculate velocity norm
