@@ -37,7 +37,7 @@ class Localizer:
         
 
     # convert azimuth to yaw angle
-    def convert_azimuth_to_yaw(azimuth):
+    def convert_azimuth_to_yaw(self, azimuth):
         yaw = -azimuth + math.pi/2
         # Clamp within 0 to 2 pi
         if yaw > 2 * math.pi:
@@ -56,7 +56,7 @@ class Localizer:
         
         azimuth = msg.azimuth - azimuth_correction
         
-        yaw = convert_azimuth_to_yaw(azimuth)
+        yaw = self.convert_azimuth_to_yaw(azimuth)
         
         # Convert yaw to quaternion
         x, y, z, w = quaternion_from_euler(0, 0, yaw)
@@ -66,9 +66,9 @@ class Localizer:
         current_pose_msg = PoseStamped()
         current_pose_msg.header.stamp = msg.header.stamp
         current_pose_msg.header.frame_id = 'map'
-        current_pose_msg.pose.position.x = x
-        current_pose_msg.pose.position.y = y
-        current_pose_msg.pose.position.z = z
+        current_pose_msg.pose.position.x = latitude - self.origin_x
+        current_pose_msg.pose.position.y = longitude - self.origin_y
+        current_pose_msg.pose.position.z = msg.height - self.undulation
         current_pose_msg.pose.orientation = orientation
         self.current_pose_pub.publish(current_pose_msg)
         
