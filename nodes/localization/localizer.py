@@ -25,6 +25,7 @@ class Localizer:
 
         # Subscribers
         rospy.Subscriber('/novatel/oem7/inspva', INSPVA, self.transform_coordinates)
+        rospy.Subscriber('/novatel/oem7/inspva', INSPVA, self.transform_velocity)
 
         # Publishers
         self.current_pose_pub = rospy.Publisher('current_pose', PoseStamped, queue_size=10)
@@ -71,6 +72,23 @@ class Localizer:
         current_pose_msg.pose.position.z = msg.height - self.undulation
         current_pose_msg.pose.orientation = orientation
         self.current_pose_pub.publish(current_pose_msg)
+        
+    def publish_transform(self, pose_msg):
+    	t = TransformStamped()
+    	
+    	t.header.stamp = pose.msg.header.stamp
+        
+    def transform_velocity(self, msg):
+        # Calculate velocity norm
+        calc_vel = math.sqrt(msg.north_velocity ** 2 + msg.east_velocity ** 2)
+        # Create TwistStamped message
+        current_vel_msg = TwistStamped()
+        current_vel_msg.header.stamp = msg.header.stamp
+        current_vel_msg.header.frame_id = "base_link"
+        current_vel_msg.twist.linear.x = calc_vel
+        
+        #Publish
+        self.current_velocity_pub.publish(current_vel_msg)
         
 
     def run(self):
