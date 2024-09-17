@@ -23,10 +23,6 @@ class Localizer:
         self.crs_utm = CRS.from_epsg(25835)
         self.utm_projection = Proj(self.crs_utm)
 
-        # Subscribers
-        rospy.Subscriber('/novatel/oem7/inspva', INSPVA, self.transform_coordinates)
-        rospy.Subscriber('/novatel/oem7/inspva', INSPVA, self.transform_velocity)
-
         # Publishers
         self.current_pose_pub = rospy.Publisher('current_pose', PoseStamped, queue_size=10)
         self.current_velocity_pub = rospy.Publisher('current_velocity', TwistStamped, queue_size=10)
@@ -35,6 +31,10 @@ class Localizer:
         # create coordinate transformer
         self.transformer = Transformer.from_crs(self.crs_wgs84, self.crs_utm)
         self.origin_x, self.origin_y = self.transformer.transform(utm_origin_lat, utm_origin_lon)
+        
+        # Subscribers
+        rospy.Subscriber('/novatel/oem7/inspva', INSPVA, self.transform_coordinates)
+        #rospy.Subscriber('/novatel/oem7/inspva', INSPVA, self.transform_velocity)
         
 
     # convert azimuth to yaw angle
@@ -50,14 +50,14 @@ class Localizer:
         
     def transform_coordinates(self, msg):
         latitude, longitude = self.transformer.transform(msg.latitude, msg.longitude)
-        print(latitude - self.origin_x, longitude - self.origin_y)
         
                 # calculate azimuth correction
         azimuth_correction = self.utm_projection.get_factors(msg.longitude,msg.latitude).meridian_convergence
         
         azimuth = msg.azimuth - azimuth_correction
+        azimuth_rad = (azimuth*math.pi)/180
         
-        yaw = self.convert_azimuth_to_yaw(azimuth)
+        yaw = self.convert_azimuth_to_yaw(azimuth_rad)
         
         # Convert yaw to quaternion
         x, y, z, w = quaternion_from_euler(0, 0, yaw)
@@ -72,6 +72,7 @@ class Localizer:
         current_pose_msg.pose.position.z = msg.height - self.undulation
         current_pose_msg.pose.orientation = orientation
         self.current_pose_pub.publish(current_pose_msg)
+        self.transform_velocity(msg)
         
         self.publish_transform(current_pose_msg)
         
