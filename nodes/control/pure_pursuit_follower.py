@@ -50,12 +50,13 @@ class PurePursuitFollower:
         # Calculate the lookahead point and then the heading; the latter can be calculated from point coordinates using the arctan2 function.
         d_ego_from_path_start = self.path_linestring.project(current_pose)
         lookahead_point = self.path_linestring.interpolate(d_ego_from_path_start + self.lookahead_distance)
+
         lookahead_heading = np.arctan2(lookahead_point.y - current_pose.y, lookahead_point.x - current_pose.x)
         
         # Recalculate the lookahead distance - ld.
         self.lookahead_distance = current_pose.distance(lookahead_point)
-        alpha = heading - lookahead_heading
-        alpha = np.arctan2(np.sin(alpha), np.cos(alpha))
+        alpha = lookahead_heading - heading
+        alpha = np.arctan2(np.sin(alpha), np.cos(alpha))# normalizing alpha
         
         
         steering_angle = np.arctan((2*self.wheel_base*np.sin(alpha))/self.lookahead_distance)
