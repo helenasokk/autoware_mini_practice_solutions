@@ -8,12 +8,14 @@ from geometry_msgs.msg import PoseStamped
 from shapely.geometry import LineString, Point
 from shapely import prepare, distance
 from tf.transformations import euler_from_quaternion
+from scipy.interpolate import interp1d
 
 class PurePursuitFollower:
     def __init__(self):
 
         # Parameters
         self.path_linestring = None
+        self.velocity_interpolator = None
         # Reading in the parameter values
         self.lookahead_distance = rospy.get_param("~lookahead_distance")
         self.wheel_base = rospy.get_param("/vehicle/wheel_base")
@@ -27,28 +29,45 @@ class PurePursuitFollower:
 
     def path_callback(self, msg):
         # convert waypoints to shapely linestring
-        path_linestring = LineString([(w.pose.pose.position.x, w.pose.pose.position.y) for w in msg.waypoints])
+        self.path_linestring = LineString([(w.pose.pose.position.x, w.pose.pose.position.y) for w in msg.waypoints])
         # prepare path - creates spatial tree, making the spatial queries more efficient
-        prepare(path_linestring)
+        prepare(self.path_linestring)
+        
+        waypoints_xy = np.array([(w.pose.pose.position.x, w.pose.pose.position.y) for w in msg.waypoints])
+        velocities = np.array([w.twist.twist.linear.x for w in msg.waypoints])
+        
+        distances = np.cumsum(np.sqrt(np.sum(np.diff(waypoints_xy, axis=0)**2, axis=1)))
+        distances = np.insert(distances, 0, 0) # add 0 distance at the start
+        
+        self.velocity_interpolator = interp1d(distances, velocities, kind='linear', bounds_error=False, fill_value=0.0)
 
     def current_pose_callback(self, msg):
+        if self.path_linestring == None or self.velocity_interpolator == None:
+            return
         current_pose = Point([msg.pose.position.x, msg.pose.position.y])
         _, _, heading = euler_from_quaternion([msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w])
+        
         # Calculate the lookahead point and then the heading; the latter can be calculated from point coordinates using the arctan2 function.
-        lookahead_point = lookahead_distance.interpolate(heading)
-        lookahead_heading = np.arctan2(lookahead_point.y - current_pose.y, lookahead_point.x - current_pose.x)
-        # Recalculate the lookahead distance - ld.
-        lookahead_distance = shapely.distance(lookahead_point, current_pose)
-        if self.path_linestring == None:
-            return
         d_ego_from_path_start = self.path_linestring.project(current_pose)
-        print(d_ego_from_path_start)
-        steering_angle = np.arctan2((2*wheel_base*np.sin(heading-lookahead_heading))/lookahead_distance)
+        lookahead_point = self.path_linestring.interpolate(d_ego_from_path_start + self.lookahead_distance)
+        lookahead_heading = np.arctan2(lookahead_point.y - current_pose.y, lookahead_point.x - current_pose.x)
+        
+        # Recalculate the lookahead distance - ld.
+        self.lookahead_distance = current_pose.distance(lookahead_point)
+        alpha = heading - lookahead_heading
+        alpha = np.arctan2(np.sin(alpha), np.cos(alpha))
+        
+        
+        steering_angle = np.arctan((2*self.wheel_base*np.sin(alpha))/self.lookahead_distance)
+
+        
+        velocity = self.velocity_interpolator(d_ego_from_path_start)
+        
         vehicle_cmd = VehicleCmd()
         vehicle_cmd.header.stamp = msg.header.stamp
         vehicle_cmd.header.frame_id = "base_link"
         vehicle_cmd.ctrl_cmd.steering_angle = steering_angle
-        vehicle_cmd.ctrl_cmd.linear_velocity = 10.0
+        vehicle_cmd.ctrl_cmd.linear_velocity = velocity
         self.vehicle_cmd_pub.publish(vehicle_cmd)
     	
     def run(self):
