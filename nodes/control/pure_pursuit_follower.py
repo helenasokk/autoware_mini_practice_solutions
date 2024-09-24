@@ -21,7 +21,7 @@ class PurePursuitFollower:
         self.wheel_base = rospy.get_param("/vehicle/wheel_base")
         
         # Publishers
-        self.vehicle_cmd_pub = rospy.Publisher('/control/vehicle_cmd', VehicleCmd)
+        self.vehicle_cmd_pub = rospy.Publisher('/control/vehicle_cmd', VehicleCmd, queue_size=1)
 
         # Subscribers
         rospy.Subscriber('path', Lane, self.path_callback, queue_size=1)
@@ -31,7 +31,10 @@ class PurePursuitFollower:
         # convert waypoints to shapely linestring
         self.path_linestring = LineString([(w.pose.pose.position.x, w.pose.pose.position.y) for w in msg.waypoints])
         # prepare path - creates spatial tree, making the spatial queries more efficient
-        prepare(self.path_linestring)
+        try:
+            prepare(self.path_linestring)
+        except:
+            print("Path_linestring is empty!")
         
         waypoints_xy = np.array([(w.pose.pose.position.x, w.pose.pose.position.y) for w in msg.waypoints])
         velocities = np.array([w.twist.twist.linear.x for w in msg.waypoints])
