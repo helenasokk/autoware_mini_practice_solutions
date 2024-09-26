@@ -4,7 +4,7 @@ import rospy
 import numpy as np
 
 from autoware_msgs.msg import Lane, VehicleCmd
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from shapely.geometry import LineString, Point
 from shapely import prepare, distance
 from tf.transformations import euler_from_quaternion
@@ -28,13 +28,15 @@ class PurePursuitFollower:
         rospy.Subscriber('/localization/current_pose', PoseStamped, self.current_pose_callback, queue_size=1)
 
     def path_callback(self, msg):
+
+        if not msg.waypoints or len(msg.waypoints) < 2:
+            rospy.logwarn("Empty or invalid path. Stopping the car.")
+            self.stop_vehicle()
+            return
         # convert waypoints to shapely linestring
         self.path_linestring = LineString([(w.pose.pose.position.x, w.pose.pose.position.y) for w in msg.waypoints])
         # prepare path - creates spatial tree, making the spatial queries more efficient
-        try:
-            prepare(self.path_linestring)
-        except:
-            print("Path_linestring is empty!")
+        prepare(self.path_linestring)
         
         waypoints_xy = np.array([(w.pose.pose.position.x, w.pose.pose.position.y) for w in msg.waypoints])
         velocities = np.array([w.twist.twist.linear.x for w in msg.waypoints])
@@ -43,6 +45,12 @@ class PurePursuitFollower:
         distances = np.insert(distances, 0, 0) # add 0 distance at the start
         
         self.velocity_interpolator = interp1d(distances, velocities, kind='linear', bounds_error=False, fill_value=0.0)
+
+    def stop_vehicle(self):
+        stop_msg = Twist()
+        stop_msg.linear.x = 0.0
+        stop_msg.angular.z = 0.0
+        self.vehicle_cmd_pub.publish(stop_msg)
 
     def current_pose_callback(self, msg):
         if self.path_linestring == None or self.velocity_interpolator == None:
