@@ -47,9 +47,11 @@ class PurePursuitFollower:
         self.velocity_interpolator = interp1d(distances, velocities, kind='linear', bounds_error=False, fill_value=0.0)
 
     def stop_vehicle(self):
-        stop_msg = Twist()
-        stop_msg.linear.x = 0.0
-        stop_msg.angular.z = 0.0
+        stop_msg = VehicleCmd()
+        stop_msg.header.stamp = msg.header.stamp
+        stop_msg.header.frame_id = "base_link"
+        stop_msg.ctrl_cmd.steering_angle = 0.0
+        stop_msg.ctrl_cmd.linear_velocity = 0.0
         self.vehicle_cmd_pub.publish(stop_msg)
 
     def current_pose_callback(self, msg):
