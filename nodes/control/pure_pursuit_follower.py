@@ -16,6 +16,7 @@ class PurePursuitFollower:
         # Parameters
         self.path_linestring = None
         self.velocity_interpolator = None
+        self.stop_requested = False
         # Reading in the parameter values
         self.lookahead_distance = rospy.get_param("~lookahead_distance")
         self.wheel_base = rospy.get_param("/vehicle/wheel_base")
@@ -31,8 +32,9 @@ class PurePursuitFollower:
 
         if not msg.waypoints or len(msg.waypoints) < 2:
             rospy.logwarn("Empty or invalid path. Stopping the car.")
-            self.stop_vehicle()
+            self.stop_requested = True
             return
+        self.stop_requested = False
         # convert waypoints to shapely linestring
         self.path_linestring = LineString([(w.pose.pose.position.x, w.pose.pose.position.y) for w in msg.waypoints])
         # prepare path - creates spatial tree, making the spatial queries more efficient
@@ -46,13 +48,18 @@ class PurePursuitFollower:
         
         self.velocity_interpolator = interp1d(distances, velocities, kind='linear', bounds_error=False, fill_value=0.0)
 
-    def stop_vehicle(self):
-        stop_msg = Twist()
-        stop_msg.linear.x = 0.0
-        stop_msg.angular.z = 0.0
+    def stop_vehicle(self, msg):
+        stop_msg = VehicleCmd()
+        stop_msg.header.stamp = msg.header.stamp
+        stop_msg.header.frame_id = "base_link"
+        stop_msg.ctrl_cmd.steering_angle = 0.0
+        stop_msg.ctrl_cmd.linear_velocity = 0.0
         self.vehicle_cmd_pub.publish(stop_msg)
 
     def current_pose_callback(self, msg):
+        if self.stop_requested:
+            self.stop_vehicle(msg)
+            return
         if self.path_linestring == None or self.velocity_interpolator == None:
             return
         current_pose = Point([msg.pose.position.x, msg.pose.position.y])

@@ -35,11 +35,17 @@ class Lanelet2GlobalPlanner:
         
         self.lanelet2_map = load(self.lanelet2_map_name, projector)
 
+        # traffic rules
+        traffic_rules = lanelet2.traffic_rules.create(lanelet2.traffic_rules.Locations.Germany, 
+                                                      lanelet2.traffic_rules.Participants.VehicleTaxi)
+        # routing graph
+        self.graph = lanelet2.routing.RoutingGraph(self.lanelet2_map, traffic_rules)
+
 
         # Publishers
         self.waypoints_pub = rospy.Publisher('global_path', Lane, queue_size=1, latch=True)
         self.route_pub = rospy.Publisher('global_path', Lane, queue_size=1)
-        self.vehicle_cmd_pub = rospy.Publisher('/vehicle_cmd', VehicleCmd, queue_size=1)
+        #self.vehicle_cmd_pub = rospy.Publisher('/vehicle_cmd', VehicleCmd, queue_size=1)
 
         # Subscribers
         rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.goal_callback, queue_size=1)
@@ -54,11 +60,6 @@ class Lanelet2GlobalPlanner:
         return math.sqrt(dx * dx + dy * dy)
     
     def routing(self, msg):
-        # traffic rules
-        traffic_rules = lanelet2.traffic_rules.create(lanelet2.traffic_rules.Locations.Germany, 
-                                                      lanelet2.traffic_rules.Participants.VehicleTaxi)
-        # routing graph
-        self.graph = lanelet2.routing.RoutingGraph(self.lanelet2_map, traffic_rules)
         self.current_location = BasicPoint2d(msg.pose.position.x, msg.pose.position.y)
         # get start and end lanelets
         start_lanelet = findNearest(self.lanelet2_map.laneletLayer, self.current_location, 1)[0][1]
@@ -78,7 +79,6 @@ class Lanelet2GlobalPlanner:
                 if not self.goal_reached:
                     rospy.loginfo("Goal reached, clearing path")
                     self.clear_path(msg)
-                    self.stop_vehicle(msg)
                     self.goal_reached = True
                 return
             self.goal_reached = False
@@ -94,7 +94,6 @@ class Lanelet2GlobalPlanner:
             self.publish_global_path(waypoints)
         except:
             # I am a bit confused of what should I do here
-            self.stop_vehicle(msg)
             rospy.logwarn("No route has been found.")
             return
         
@@ -105,14 +104,6 @@ class Lanelet2GlobalPlanner:
         lane.waypoints = []
 
         self.waypoints_pub.publish(lane)
-    
-    def stop_vehicle(self, msg):
-        stop_cmd = VehicleCmd()
-        stop_cmd.header.stamp = msg.header.stamp
-        stop_cmd.ctrl_cmd.linear_velocity = 0.0
-        stop_cmd.ctrl_cmd.linear_acceleration = 0.0
-
-        self.vehicle_cmd_pub.publish(stop_cmd)
 
     def convert_to_lane_msg(self, msg, lanelet_seq):
         lane_msg = Lane()
