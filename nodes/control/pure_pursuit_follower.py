@@ -48,11 +48,7 @@ class PurePursuitFollower:
         
         self.velocity_interpolator = interp1d(distances, velocities, kind='linear', bounds_error=False, fill_value=0.0)
 
-<<<<<<< HEAD
     def stop_vehicle(self, msg):
-=======
-    def stop_vehicle(self):
->>>>>>> b14305882c3fc8f0eb5379f8f0dd54beda99cb20
         stop_msg = VehicleCmd()
         stop_msg.header.stamp = msg.header.stamp
         stop_msg.header.frame_id = "base_link"
