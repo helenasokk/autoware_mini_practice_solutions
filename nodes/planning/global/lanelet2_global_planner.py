@@ -13,7 +13,7 @@ from shapely.geometry import Point, LineString
 import rospy
 
 from geometry_msgs.msg import PoseStamped
-from autoware_msgs.msg import Lane, Waypoint, VehicleCmd
+from autoware_msgs.msg import Lane, Waypoint
 
 class Lanelet2GlobalPlanner:
     def __init__(self):
@@ -47,7 +47,6 @@ class Lanelet2GlobalPlanner:
         # Publishers
         self.waypoints_pub = rospy.Publisher('global_path', Lane, queue_size=1, latch=True)
         self.route_pub = rospy.Publisher('global_path', Lane, queue_size=1)
-        #self.vehicle_cmd_pub = rospy.Publisher('/vehicle_cmd', VehicleCmd, queue_size=1)
 
         # Subscribers
         rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.goal_callback, queue_size=1)
@@ -81,7 +80,6 @@ class Lanelet2GlobalPlanner:
                 rospy.logwarn("No path found.")
                 return
 
-            #current_position = BasicPoint2d(msg.pose.position.x, msg.pose.position.y)
             distance = self.distance_to_goal(self.current_location)
             if distance < self.distance_to_goal_limit:
                 if not self.goal_reached:
@@ -96,19 +94,18 @@ class Lanelet2GlobalPlanner:
                 rospy.logwarn("No path found without lane change.")
                 return
             print(path_no_lane_change)
-            #projected_goal = self.project_goal_on_path(path_no_lane_change[-1].centerline, self.goal_point)
+            projected_goal = self.project_goal_on_path(path_no_lane_change[-1].centerline, self.goal_point)
 
             global_path = self.convert_to_lane_msg(msg, path_no_lane_change)
             self.route_pub.publish(global_path)
 
-            waypoints = self.lanelet_seq_2_waypoints(path_no_lane_change, None)
+            waypoints = self.lanelet_seq_2_waypoints(path_no_lane_change, projected_goal)
             self.publish_global_path(waypoints)
         except:
-            # I am a bit confused of what should I do here
             rospy.logwarn("No route has been found.")
             return
         
-    def project_goal_on_path(lanelet_center, goal_point):
+    def project_goal_on_path(self, lanelet_center, goal_point):
         # Tried to implement so that the goal would be the last waypoint of the path
         # project the goal point onto the nearest location on the lanelet centerline
         centerline_coords = [(p.x, p.y) for p in lanelet_center]
@@ -144,7 +141,6 @@ class Lanelet2GlobalPlanner:
     
     def lanelet_seq_2_waypoints(self, path_no_lane_change, projected_goal):
         waypoints = []
-        #projected_goal=None
 
         for lanelet in path_no_lane_change:
             if 'speed_ref' in lanelet.attributes:
@@ -167,12 +163,13 @@ class Lanelet2GlobalPlanner:
 
                 waypoints.append(waypoint)
 
-            #if lanelet == path_no_lane_change[-1]:
-            #    projected_goal = self.project_goal_on_path(centerline, self.goal_point)
+            if lanelet == path_no_lane_change[-1]:
+                projected_goal = self.project_goal_on_path(centerline, self.goal_point)
         
-        #if projected_goal:
-        #    waypoints[-1].pose.pose.position.x = projected_goal.x
-        #    waypoints[-1].pose.pose.position.y = projected_goal.y
+        if projected_goal:
+            # The speed stays the same, I'm changing only the x and y position of the last waypoint
+            waypoints[-1].pose.pose.position.x = projected_goal.x
+            waypoints[-1].pose.pose.position.y = projected_goal.y
 
         return waypoints
     
@@ -192,17 +189,7 @@ class Lanelet2GlobalPlanner:
                     msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z,
                     msg.pose.orientation.w, msg.header.frame_id)
         self.goal_point = BasicPoint2d(msg.pose.position.x, msg.pose.position.y)
-        #goal = PoseStamped()
-        #goal.header.stamp = msg.header.stamp
-        #goal.pose.position.x = msg.pose.position.x
-        #goal.pose.position.y = msg.pose.position.y
-        #goal.pose.position.z = msg.pose.position.z
-        #goal.pose.orientation.x = msg.pose.orientation.x
-        #goal.pose.orientation.y = msg.pose.orientation.y
-        #goal.pose.orientation.z = msg.pose.orientation.z
-        #goal.pose.orientation.w = msg.pose.orientation.w
-        #self.goal_pub.publish(goal)
-
+        
 
     def run(self):
         rospy.spin()
