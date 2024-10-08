@@ -20,6 +20,7 @@ class Lanelet2GlobalPlanner:
 
         self.goal_point = None
         self.goal_reached = False
+        self.current_location = None
 
         self.lanelet2_map_name = rospy.get_param('~lanelet2_map_name')
         self.speed_limit = rospy.get_param('~speed_limit', 40.0)
@@ -60,40 +61,31 @@ class Lanelet2GlobalPlanner:
         dy = current_pose.y - self.goal_point.y
         return math.sqrt(dx * dx + dy * dy)
     
-    def routing(self, msg):
-        self.current_location = BasicPoint2d(msg.pose.position.x, msg.pose.position.y)
+    def compute_route(self, msg):
+        if self.current_location is None:
+            rospy.logwarn("Current location not set!")
+            return
         # get start and end lanelets
         start_lanelet = findNearest(self.lanelet2_map.laneletLayer, self.current_location, 1)[0][1]
-        if self.goal_point == None:
-            #rospy.logwarn("Goal point not set!")
-            return
         goal_lanelet = findNearest(self.lanelet2_map.laneletLayer, self.goal_point, 1)[0][1]
+
         # find routing graph
         try:
             route = self.graph.getRoute(start_lanelet, goal_lanelet, 0, True)
             if not route:
                 rospy.logwarn("No route found.")
                 return
+            
             # find shortest path
             path = route.shortestPath()
             if not path:
                 rospy.logwarn("No path found.")
                 return
-
-            distance = self.distance_to_goal(self.current_location)
-            if distance < self.distance_to_goal_limit:
-                if not self.goal_reached:
-                    rospy.loginfo("Goal reached, clearing path")
-                    self.clear_path(msg)
-                    self.goal_reached = True
-                return
-            self.goal_reached = False
-            # this returns LaneletSequence to a point wexcept:
+            
             path_no_lane_change = path.getRemainingLane(start_lanelet)
             if not path_no_lane_change:
                 rospy.logwarn("No path found without lane change.")
                 return
-            print(path_no_lane_change)
             projected_goal = self.project_goal_on_path(path_no_lane_change[-1].centerline, self.goal_point)
 
             global_path = self.convert_to_lane_msg(msg, path_no_lane_change)
@@ -104,6 +96,20 @@ class Lanelet2GlobalPlanner:
         except:
             rospy.logwarn("No route has been found.")
             return
+
+    def routing(self, msg):
+        self.current_location = BasicPoint2d(msg.pose.position.x, msg.pose.position.y)
+        distance = self.distance_to_goal(self.current_location)
+        if self.goal_point == None:
+            return
+
+        if distance < self.distance_to_goal_limit:
+            if not self.goal_reached:
+                rospy.loginfo("Goal reached, clearing path")
+                self.clear_path(msg)
+                self.goal_reached = True
+            return
+        self.goal_reached = False
         
     def project_goal_on_path(self, lanelet_center, goal_point):
         # Tried to implement so that the goal would be the last waypoint of the path
@@ -141,6 +147,7 @@ class Lanelet2GlobalPlanner:
     
     def lanelet_seq_2_waypoints(self, path_no_lane_change, projected_goal):
         waypoints = []
+        goal_distance = self.calculate_dist_along_path(path_no_lane_change, projected_goal)
 
         for lanelet in path_no_lane_change:
             if 'speed_ref' in lanelet.attributes:
@@ -151,9 +158,15 @@ class Lanelet2GlobalPlanner:
             speed = min(speed, self.speed_limit*1000/3600)
             centerline = lanelet.centerline
 
-            for i, point in enumerate(lanelet.centerline):
+            for i, point in enumerate(centerline):
                 if len(waypoints) > 0 and i == 0:
                     continue
+
+                waypoint_dist = self.calculate_dist_along_path(path_no_lane_change, BasicPoint2d(point.x, point.y))
+
+                if waypoint_dist > goal_distance:
+                    rospy.loginfo("Reached projected goal point.")
+                    return waypoints
 
                 waypoint = Waypoint()
                 waypoint.pose.pose.position.x = point.x
@@ -162,16 +175,33 @@ class Lanelet2GlobalPlanner:
                 waypoint.twist.twist.linear.x = speed
 
                 waypoints.append(waypoint)
-
-            if lanelet == path_no_lane_change[-1]:
-                projected_goal = self.project_goal_on_path(centerline, self.goal_point)
         
         if projected_goal:
-            # The speed stays the same, I'm changing only the x and y position of the last waypoint
-            waypoints[-1].pose.pose.position.x = projected_goal.x
-            waypoints[-1].pose.pose.position.y = projected_goal.y
+            # adding the projected goal as the last waypoint 
+            final_wp = Waypoint()
+            final_wp.pose.pose.position.x = projected_goal.x
+            final_wp.pose.pose.position.y = projected_goal.y
+            final_wp.pose.pose.position.z = 0.0
+            final_wp.twist.twist.linear.x = 0.0
+            waypoints.append(final_wp)
 
         return waypoints
+    
+    def calculate_dist_along_path(self, path_no_lane_change, point):
+        distance = 0.0
+        previous_point = None
+        for lanelet in path_no_lane_change:
+            for p in lanelet.centerline:
+                current_point = (p.x, p.y)
+                if previous_point is not None:
+                    # calculating the Euclidean distance
+                    dx = current_point[0] - previous_point[0]
+                    dy = current_point[1] - previous_point[1]
+                    distance += math.sqrt(dx * dx + dy * dy)
+                if p.x == point.x and p.y == point.y:
+                    return distance
+                previous_point = current_point
+        return distance
     
     def publish_global_path(self, waypoints):
         lane = Lane()
@@ -189,6 +219,8 @@ class Lanelet2GlobalPlanner:
                     msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z,
                     msg.pose.orientation.w, msg.header.frame_id)
         self.goal_point = BasicPoint2d(msg.pose.position.x, msg.pose.position.y)
+        self.goal_reached = False # have to reset the goal flag
+        self.compute_route(msg)
         
 
     def run(self):
