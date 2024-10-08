@@ -47,7 +47,6 @@ class Lanelet2GlobalPlanner:
 
         # Publishers
         self.waypoints_pub = rospy.Publisher('global_path', Lane, queue_size=1, latch=True)
-        self.route_pub = rospy.Publisher('global_path', Lane, queue_size=1)
 
         # Subscribers
         rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.goal_callback, queue_size=1)
@@ -87,9 +86,6 @@ class Lanelet2GlobalPlanner:
                 rospy.logwarn("No path found without lane change.")
                 return
             projected_goal = self.project_goal_on_path(path_no_lane_change[-1].centerline, self.goal_point)
-
-            global_path = self.convert_to_lane_msg(msg, path_no_lane_change)
-            self.route_pub.publish(global_path)
 
             waypoints = self.lanelet_seq_2_waypoints(path_no_lane_change, projected_goal)
             self.publish_global_path(waypoints)
@@ -147,7 +143,7 @@ class Lanelet2GlobalPlanner:
     
     def lanelet_seq_2_waypoints(self, path_no_lane_change, projected_goal):
         waypoints = []
-        goal_distance = self.calculate_dist_along_path(path_no_lane_change, projected_goal)
+        goal_distance = self.calculate_dist_along_path(path_no_lane_change[-1].centerline, projected_goal)
 
         for lanelet in path_no_lane_change:
             if 'speed_ref' in lanelet.attributes:
@@ -162,11 +158,11 @@ class Lanelet2GlobalPlanner:
                 if len(waypoints) > 0 and i == 0:
                     continue
 
-                waypoint_dist = self.calculate_dist_along_path(path_no_lane_change, BasicPoint2d(point.x, point.y))
+                waypoint_dist = self.calculate_dist_along_path(centerline, BasicPoint2d(point.x, point.y))
 
                 if waypoint_dist > goal_distance:
                     rospy.loginfo("Reached projected goal point.")
-                    return waypoints
+                    break
 
                 waypoint = Waypoint()
                 waypoint.pose.pose.position.x = point.x
@@ -182,25 +178,17 @@ class Lanelet2GlobalPlanner:
             final_wp.pose.pose.position.x = projected_goal.x
             final_wp.pose.pose.position.y = projected_goal.y
             final_wp.pose.pose.position.z = 0.0
-            final_wp.twist.twist.linear.x = 0.0
             waypoints.append(final_wp)
 
         return waypoints
     
-    def calculate_dist_along_path(self, path_no_lane_change, point):
-        distance = 0.0
-        previous_point = None
-        for lanelet in path_no_lane_change:
-            for p in lanelet.centerline:
-                current_point = (p.x, p.y)
-                if previous_point is not None:
-                    # calculating the Euclidean distance
-                    dx = current_point[0] - previous_point[0]
-                    dy = current_point[1] - previous_point[1]
-                    distance += math.sqrt(dx * dx + dy * dy)
-                if p.x == point.x and p.y == point.y:
-                    return distance
-                previous_point = current_point
+    def calculate_dist_along_path(self, lanelet_center, point):
+        centerline_coords = [(p.x, p.y) for p in lanelet_center]
+        line = LineString(centerline_coords)
+
+        goal = Point(point.x, point.y)
+
+        distance = line.project(goal)
         return distance
     
     def publish_global_path(self, waypoints):
