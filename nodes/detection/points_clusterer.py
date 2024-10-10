@@ -20,27 +20,39 @@ class PointsClusterer:
         rospy.Subscriber('points_filtered', PointCloud2, self.points_callback, queue_size=1, buff_size=2**24, tcp_nodelay=True)
 
     def points_callback(self, msg):
-        data = numpify(msg)
-        points = structured_to_unstructured(data[['x', 'y', 'z']], dtype=np.float32)
-        label = self.clusterer.fit_predict(points)
-        assert points.shape[0] == label.shape[0], "The number of points and labels is different."
-        rospy.loginfo(points + label)
-        """for i in range(points.shape[0]):
-            if label[i] != -1:
-                points_labeled.append((points[i], label[i]))
-        # convert labelled points to PointCloud2 format
-        data = unstructured_to_structured(points_labeled, dtype=np.dtype([
-        ('x', np.float32),
-        ('y', np.float32),
-        ('z', np.float32),
-        ('label', np.int32)
-        ]))
+        try:
+            data = numpify(msg)
+            points = structured_to_unstructured(data[['x', 'y', 'z']], dtype=np.float32)
+            labels = self.clusterer.fit_predict(points)
+            labels = labels.astype(np.int32)
+            assert points.shape[0] == labels.shape[0], "The number of points and labels is different."
 
-        # publish clustered points message
-        cluster_msg = msgify(PointCloud2, data)
-        cluster_msg.header.stamp = msg.header.stamp
-        cluster_msg.header.frame_id = msg.header.frame_id
-        self.clustered_pub(cluster_msg)"""
+            points_labeled = np.hstack((points, labels[:, np.newaxis]))
+
+            dtype = np.dtype([
+            ('x', np.float32),
+            ('y', np.float32),
+            ('z', np.float32),
+            ('label', np.int32)
+            ])
+
+            
+            # convert labelled points to PointCloud2 format
+            data = unstructured_to_structured(points_labeled, dtype=dtype)
+            clustered_points = data[data['label'] != -1]
+
+            if clustered_points.shape[0] == 0:
+                rospy.logwarn("No clustered points found after filtering noise.")
+                return
+
+            # publish clustered points message
+            cluster_msg = msgify(PointCloud2, clustered_points)
+            cluster_msg.header.stamp = msg.header.stamp
+            cluster_msg.header.frame_id = msg.header.frame_id
+            self.clustered_pub.publish(cluster_msg)
+
+        except Exception as e:
+            rospy.logerr(f"Error in points_callback: {e}")
 
     def run(self):
         rospy.spin()
