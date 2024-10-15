@@ -25,7 +25,7 @@ class PointsClusterer:
             points = structured_to_unstructured(data[['x', 'y', 'z']], dtype=np.float32)
             labels = self.clusterer.fit_predict(points)
             labels = labels.astype(np.int32)
-            assert points.shape[0] == labels.shape[0], "The number of points and labels is different."
+            assert points.shape[0] == labels.shape[0], f"{rospy.get_name()} The number of points and labels is different."
 
             points_labeled = np.hstack((points, labels[:, np.newaxis]))
 
@@ -42,7 +42,7 @@ class PointsClusterer:
             clustered_points = data[data['label'] != -1]
 
             if clustered_points.shape[0] == 0:
-                rospy.logwarn("No clustered points found after filtering noise.")
+                rospy.logwarn(f"{rospy.get_name()} No clustered points found after filtering noise.")
                 return
 
             # publish clustered points message
@@ -52,7 +52,7 @@ class PointsClusterer:
             self.clustered_pub.publish(cluster_msg)
 
         except Exception as e:
-            rospy.logerr(f"Error in points_callback: {e}")
+            rospy.logerr(f"{rospy.get_name()} Error in points_callback: {e}")
 
     def run(self):
         rospy.spin()
