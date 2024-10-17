@@ -95,13 +95,16 @@ class SimpleLocalPlanner:
             distance_to_velocity_interpolator = self.distance_to_velocity_interpolator
             current_position = self.current_position
             local_path_length = self.local_path_length
+
         # check if all the necessary variables are set
         if global_path_linestring is None or global_path_distances is None or distance_to_velocity_interpolator is None:
             # publishing an empty local path
             rospy.logwarn(f"{rospy.get_name()} - Missing necessary global path information.")
             self.publish_local_path_wp([], msg.header.stamp, self.output_frame, 0.0, 0.0, False, 0.0)
             return
+        
         d_ego_from_path_start = global_path_linestring.project(current_position)
+
         # extracting the local path
         local_path = self.extract_local_path(global_path_linestring, global_path_distances, d_ego_from_path_start, local_path_length)
         if local_path is None:
@@ -109,10 +112,11 @@ class SimpleLocalPlanner:
             rospy.loginfo(f"{rospy.get_name()} - Reached the end of the global path.")
             self.publish_local_path_wp([], msg.header.stamp, self.output_frame, 0.0, 0.0, False, 0.0)
             return
+        
         # calculating target velocity using the interpolator created in path_callback
-        target_velocity = float(distance_to_velocity_interpolator(d_ego_from_path_start))
+        map_based_velocity = float(distance_to_velocity_interpolator(d_ego_from_path_start))
         # converting local path to waypoints and publishing them
-        local_path_to_wp = self.convert_local_path_to_waypoints(local_path, target_velocity)
+        local_path_to_wp = self.convert_local_path_to_waypoints(local_path, map_based_velocity)
         #creating a buffer around the local path
         local_path_buffer = local_path.buffer(self.stopping_lateral_distance, cap_style="flat")
         prepare(local_path_buffer)
@@ -121,8 +125,11 @@ class SimpleLocalPlanner:
         closest_obj_d = float('inf')
         closest_obj_velocity = 0.0
         local_path_blocked = False
+        object_distances = []
+        object_velocities = []
+        adjust_stopping_distances = []
+        target_distances = []
 
-        obj_distances = []
         for obj in msg.objects:
             obj_polygon = Polygon([(p.x, p.y) for p in obj.convex_hull.polygon.points])
 
@@ -135,19 +142,59 @@ class SimpleLocalPlanner:
                 d_obj_from_path_start = global_path_linestring.project(obj_position)
                 d_to_object = d_obj_from_path_start - d_ego_from_path_start
 
-                # updating closest object info
-                if d_to_object < closest_obj_d and d_to_object > 0:
-                    closest_obj_d = d_to_object
-                    closest_obj_velocity = obj.velocity.linear.x
-                    local_path_blocked = True
+                actual_obj_speed = np.linalg.norm([obj.velocity.linear.x, obj.velocity.linear.y])
 
-        # no intersections found
-        if closest_obj_d == float('inf'):
+                try:
+                    transform = self.tf_buffer.lookup_transform(self.output_frame, msg.header.frame_id, rospy.Time(), rospy.Duration(self.transform_timeout))
+                except TransformException as e:
+                    rospy.logwarn(f"{rospy.get_name()} - Transform lookup failed: {e}")
+                    transform = None
+
+                if transform is not None:
+                    vector3_stamped = Vector3Stamped(vector=obj.velocity.linear)
+                    velocity = do_transform_vector3(vector3_stamped, transform).vector
+                else:
+                    velocity = Vector3()
+                
+                obj_velocity = velocity.x
+
+                adjust_stopping_d = d_to_object - (self.current_pose_to_car_front + self.braking_safety_distance_obstacle)
+
+                if adjust_stopping_d > 0:
+                    object_distances.append(d_to_object)
+                    object_velocities.append(obj_velocity)
+                    adjust_stopping_distances.append(adjust_stopping_d)
+
+                    reaction_distance = self.braking_reaction_time * abs(obj_velocity)
+                    target_distance = d_to_object - reaction_distance
+                    target_distances.append(target_distance)
+
+                    rospy.loginfo(f"Object actual speed: {actual_obj_speed:.2f} m/s, Speed relative to ego vehicle: {obj_velocity:.2f} m/s")
+                    rospy.loginfo(f"Reaction distance: {reaction_distance:.2f} m, target distance: {target_distance:.2f} m")
+
+        if len(object_distances) > 0:
+            filtered_velocities =  np.maximum(0, object_velocities)
+
+            target_velocities = np.sqrt(np.maximum(0.0, 2 * self.default_deceleration * np.array(target_distances))) + filtered_velocities
+
+            min_index = np.argmin(target_velocities)
+            closest_obj_d = object_distances[min_index]
+            closest_obj_velocity = object_velocities[min_index]
+            stopping_point_distance = adjust_stopping_distances[min_index]
+
+            target_velocity = min(target_velocities[min_index], map_based_velocity)
+            local_path_blocked = True
+        else:
             closest_obj_d = 0.0
             closest_obj_velocity = 0.0
+            stopping_point_distance = 0.0
             local_path_blocked = False
+            target_velocity = map_based_velocity
         
-        self.publish_local_path_wp(local_path_to_wp, msg.header.stamp, self.output_frame, closest_obj_d, closest_obj_velocity, local_path_blocked, closest_obj_d)
+        rospy.loginfo(f"Closest object distance: {closest_obj_d}, Stopping point distance: {stopping_point_distance}, Closest object velocity: {closest_obj_velocity}, Target velocity: {target_velocity}")
+
+        local_path_to_wp = self.convert_local_path_to_waypoints(local_path, target_velocity)
+        self.publish_local_path_wp(local_path_to_wp, msg.header.stamp, self.output_frame, closest_obj_d, closest_obj_velocity, local_path_blocked, stopping_point_distance)
 
 
     def extract_local_path(self, global_path_linestring, global_path_distances, d_ego_from_path_start, local_path_length):
