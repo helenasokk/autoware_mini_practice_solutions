@@ -89,7 +89,6 @@ class SimpleLocalPlanner:
 
     def detected_objects_callback(self, msg):
         print("------ detected objects callback, number of objects: ", len(msg.objects))
-        print(msg.objects)
         with self.lock:
             global_path_linestring = self.global_path_linestring
             global_path_distances = self.global_path_distances
@@ -97,24 +96,58 @@ class SimpleLocalPlanner:
             current_position = self.current_position
             local_path_length = self.local_path_length
         # check if all the necessary variables are set
-        if global_path_linestring != None and global_path_distances != None and distance_to_velocity_interpolator != None:
-            d_ego_from_path_start = global_path_linestring.project(current_position)
-            # extracting the local path
-            local_path = self.extract_local_path(global_path_linestring, global_path_distances, d_ego_from_path_start, local_path_length)
-            if local_path == None:
-                # publishing an empty local path
-                self.publish_local_path_wp()
-            # calculating target velocity using the interpolator created in path_callback
-            target_velocity = None
-            # converting local path to waypoints and publishing them
-            local_path_to_wp = self.convert_local_path_to_waypoints(local_path, target_velocity)
-            # If there are no obstacles on the local path
-            if len(msg.objects) == 0:
-                self.publish_local_path_wp(local_path_waypoints=local_path_to_wp, stamp=msg.header.stamp, output_frame=self.output_frame, closest_object_distance=0.0, closest_object_velocity=0.0, local_path_blocked=False, stopping_point_distance=0.0)
-            #self.publish_local_path_wp(local_path_to_wp, msg.header.stamp, self.output_frame)
-        else:
+        if global_path_linestring is None or global_path_distances is None or distance_to_velocity_interpolator is None:
             # publishing an empty local path
+            rospy.logwarn(f"{rospy.get_name()} - Missing necessary global path information.")
             self.publish_local_path_wp([], msg.header.stamp, self.output_frame, 0.0, 0.0, False, 0.0)
+            return
+        d_ego_from_path_start = global_path_linestring.project(current_position)
+        # extracting the local path
+        local_path = self.extract_local_path(global_path_linestring, global_path_distances, d_ego_from_path_start, local_path_length)
+        if local_path is None:
+            # publishing an empty local path
+            rospy.loginfo(f"{rospy.get_name()} - Reached the end of the global path.")
+            self.publish_local_path_wp([], msg.header.stamp, self.output_frame, 0.0, 0.0, False, 0.0)
+            return
+        # calculating target velocity using the interpolator created in path_callback
+        target_velocity = float(distance_to_velocity_interpolator(d_ego_from_path_start))
+        # converting local path to waypoints and publishing them
+        local_path_to_wp = self.convert_local_path_to_waypoints(local_path, target_velocity)
+        #creating a buffer around the local path
+        local_path_buffer = local_path.buffer(self.stopping_lateral_distance, cap_style="flat")
+        prepare(local_path_buffer)
+
+        # variables
+        closest_obj_d = float('inf')
+        closest_obj_velocity = 0.0
+        local_path_blocked = False
+
+        obj_distances = []
+        for obj in msg.objects:
+            obj_polygon = Polygon([(p.x, p.y) for p in obj.convex_hull.polygon.points])
+
+            # does the object intersect with the local path buffer
+            if local_path_buffer.intersects(obj_polygon):
+                intersection = local_path_buffer.intersection(obj_polygon)
+                rospy.loginfo(f"{rospy.get_name()} - Intersection found with object: {intersection}")
+
+                obj_position = Point(obj.pose.position.x, obj.pose.position.y)
+                d_obj_from_path_start = global_path_linestring.project(obj_position)
+                d_to_object = d_obj_from_path_start - d_ego_from_path_start
+
+                # updating closest object info
+                if d_to_object < closest_obj_d and d_to_object > 0:
+                    closest_obj_d = d_to_object
+                    closest_obj_velocity = obj.velocity.linear.x
+                    local_path_blocked = True
+
+        # no intersections found
+        if closest_obj_d == float('inf'):
+            closest_obj_d = 0.0
+            closest_obj_velocity = 0.0
+            local_path_blocked = False
+        
+        self.publish_local_path_wp(local_path_to_wp, msg.header.stamp, self.output_frame, closest_obj_d, closest_obj_velocity, local_path_blocked, closest_obj_d)
 
 
     def extract_local_path(self, global_path_linestring, global_path_distances, d_ego_from_path_start, local_path_length):
