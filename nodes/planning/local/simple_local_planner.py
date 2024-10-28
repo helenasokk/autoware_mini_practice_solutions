@@ -109,7 +109,7 @@ class SimpleLocalPlanner:
         local_path = self.extract_local_path(global_path_linestring, global_path_distances, d_ego_from_path_start, local_path_length)
         if local_path is None:
             # publishing an empty local path
-            rospy.loginfo(f"{rospy.get_name()} - Reached the end of the global path.")
+            rospy.loginfo_throttle(2, f"{rospy.get_name()} - Reached the end of the global path.")
             self.publish_local_path_wp([], msg.header.stamp, self.output_frame, 0.0, 0.0, False, 0.0)
             return
         
@@ -138,12 +138,12 @@ class SimpleLocalPlanner:
             return"""
         d_goal_from_path_start = global_path_linestring.project(goal_pos)
         d_to_goal = d_goal_from_path_start - d_ego_from_path_start # distance to goal point
-        rospy.loginfo(f"{rospy.get_name()} - Goal point set with the distance: {d_to_goal}.")
+        rospy.loginfo_throttle(2, f"{rospy.get_name()} - Goal point set with the distance: {d_to_goal}.")
 
         if d_to_goal > 0 and d_to_goal <= local_path_length: # we haven't reached the goal yet
             object_distances.append(d_to_goal)
             object_velocities.append(0.0)
-            adjust_stopping_distances.append(d_to_goal - (self.braking_safety_distance_goal + self.current_pose_to_car_front))
+            adjust_stopping_distances.append(d_to_goal - self.braking_safety_distance_goal) # removed current_pose_to_car_front
             target_distances.append(d_to_goal)
             object_braking_distances.append(self.braking_safety_distance_goal)
 
@@ -153,7 +153,7 @@ class SimpleLocalPlanner:
             # does the object intersect with the local path buffer
             if local_path_buffer.intersects(obj_polygon):
                 intersection = local_path_buffer.intersection(obj_polygon)
-                rospy.loginfo(f"{rospy.get_name()} - Intersection found with object: {intersection}")
+                rospy.loginfo_throttle(2, f"{rospy.get_name()} - Intersection found with object: {intersection}")
 
                 obj_position = Point(obj.pose.position.x, obj.pose.position.y)
                 d_obj_from_path_start = global_path_linestring.project(obj_position)
@@ -182,18 +182,19 @@ class SimpleLocalPlanner:
                     object_velocities.append(obj_velocity)
                     adjust_stopping_distances.append(adjust_stopping_d)
 
+                    object_braking_distances.append(self.braking_safety_distance_obstacle) # adding to the object_braking_distances array
+                    # Changed the order because got an error that the array is empty but we want to access it when calculating target_distance
+
                     reaction_distance = self.braking_reaction_time * abs(obj_velocity)
                     target_distance = d_to_object - (self.current_pose_to_car_front + reaction_distance + object_braking_distances[-1]) # added self.current_pose_to_car_front and the last braking distance from object_braking_distances array
                     target_distances.append(target_distance)
 
-                    object_braking_distances.append(self.braking_safety_distance_obstacle) # adding to the object_braking_distances array
-
-                    rospy.loginfo(f"Object actual speed: {actual_obj_speed:.2f} m/s, Speed relative to ego vehicle: {obj_velocity:.2f} m/s")
-                    rospy.loginfo(f"Reaction distance: {reaction_distance:.2f} m, target distance: {target_distance:.2f} m")
+                    rospy.loginfo_throttle(3, f"Object actual speed: {actual_obj_speed:.2f} m/s, Speed relative to ego vehicle: {obj_velocity:.2f} m/s")
+                    rospy.loginfo_throttle(3, f"Reaction distance: {reaction_distance:.2f} m, target distance: {target_distance:.2f} m")
 
         if len(target_distances) > 0:
 
-            target_velocities = np.sqrt(np.maximum(0.0, 2 * self.default_deceleration * np.array(target_distances))) + np.array(object_velocities) # have to count also velocities
+            target_velocities = np.sqrt(np.maximum(0.0, 2 * self.default_deceleration * np.array(target_distances) + np.array(object_velocities)**2)) # have to count also velocities
             min_index = np.argmin(target_velocities)
             closest_obj_d = object_distances[min_index]
             closest_obj_velocity = object_velocities[min_index]
@@ -211,7 +212,7 @@ class SimpleLocalPlanner:
             local_path_blocked = False
             target_velocity = map_based_velocity
         
-        rospy.loginfo(f"Closest object distance: {closest_obj_d}, Stopping point distance: {stopping_point_distance}, Closest object velocity: {closest_obj_velocity}, Target velocity: {target_velocity}")
+        rospy.loginfo_throttle(3, f"Closest object distance: {closest_obj_d}, Stopping point distance: {stopping_point_distance}, Closest object velocity: {closest_obj_velocity}, Target velocity: {target_velocity}")
 
         local_path_to_wp = self.convert_local_path_to_waypoints(local_path, target_velocity)
         self.publish_local_path_wp(local_path_to_wp, msg.header.stamp, self.output_frame, closest_obj_d, closest_obj_velocity, local_path_blocked, stopping_point_distance)
