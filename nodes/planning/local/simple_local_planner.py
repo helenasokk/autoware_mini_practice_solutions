@@ -88,7 +88,6 @@ class SimpleLocalPlanner:
         self.current_position = current_position
 
     def detected_objects_callback(self, msg):
-        print("------ detected objects callback, number of objects: ", len(msg.objects))
         with self.lock:
             global_path_linestring = self.global_path_linestring
             global_path_distances = self.global_path_distances
@@ -132,10 +131,6 @@ class SimpleLocalPlanner:
         object_braking_distances = []
 
         goal_pos = Point(global_path_linestring.coords[-1]) # last point of the global path is the goal
-        # maybe should add a check if the goal point is within the local path
-        """if goal_pos not in local_path_to_wp:
-            rospy.logwarn(f"{rospy.get_name()} - Goal point is not within the local path.")
-            return"""
         d_goal_from_path_start = global_path_linestring.project(goal_pos)
         d_to_goal = d_goal_from_path_start - d_ego_from_path_start # distance to goal point
         rospy.loginfo_throttle(2, f"{rospy.get_name()} - Goal point set with the distance: {d_to_goal}.")
@@ -144,8 +139,8 @@ class SimpleLocalPlanner:
             object_distances.append(d_to_goal)
             object_velocities.append(0.0)
             adjust_stopping_distances.append(d_to_goal - self.braking_safety_distance_goal) # removed current_pose_to_car_front
-            target_distances.append(d_to_goal)
             object_braking_distances.append(self.braking_safety_distance_goal)
+            target_distances.append(d_to_goal - (self.current_pose_to_car_front + object_braking_distances[-1]))
 
         for obj in msg.objects:
             obj_polygon = Polygon([(p.x, p.y) for p in obj.convex_hull.polygon.points])
