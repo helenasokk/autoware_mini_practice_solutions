@@ -106,9 +106,14 @@ class CameraTrafficLightDetector:
         # used in calculate_roi_coordinates to filter out only relevant signals
         stoplines_on_path = []
 
-        if local_path_msg.local_path_waypoints is not None:
-            local_path = local_path_msg.local_path_waypoints
-            stoplines = self.tfl_stoplines
+        if local_path_msg.waypoints is not None:
+            #print(local_path_msg.waypoints)
+            local_path = LineString([(p.pose.pose.position.x, p.pose.pose.position.y) for p in local_path_msg.waypoints])
+            stoplines = self.tfl_stoplines.items()
+            #print("Test|stoplines: ", stoplines) # dictionary with id: LineString(coord)
+            for k, v in stoplines:
+                if local_path.intersects(v):
+                    stoplines_on_path.append(k) # key is the id?
         # check the intersection of stop lines and local path
         # add stoplineId in the list if they intersect
 
@@ -138,15 +143,74 @@ class CameraTrafficLightDetector:
             stoplines_on_path = self.stoplines_on_path
             transform_from_frame = self.transform_from_frame
 
-        print(f"Stoplines on path: {stoplines_on_path}")
+        if len(stoplines_on_path) != 0:
+            #get the transform
+            transform_to_frame = self.tf_buffer.lookup_transform(camera_image_msg.header.frame_id, transform_from_frame, camera_image_msg.header.stamp, rospy.Duration(self.transform_timeout))
+            rois = self.calculate_roi_coordinates(stoplines_on_path, transform_to_frame)
+            print("Rois: ", rois)
+            # run model and do prediction
+            predictions = self.model.run(None, {'conv2d_1_input': rois})[0]
+
+
+        
+        #print(f"Stoplines on path: {stoplines_on_path}")
             
 
 
     def calculate_roi_coordinates(self, stoplines_on_path, transform):
-        pass
+        rois = []
+        for stoplineId in stoplines_on_path:
+            for plId, bulbs in self.signals[stoplineId].items():
+
+                us = []
+                vs = []
+                for _, _, x, y, z in bulbs:
+                    # extract map coordinates for every light bulb 
+                    point_map = Point(float(x), float(y), float(z))
+
+                    point_camera = do_transform_point(PointStamped(point=point_map), transform).point
+                    u, v = self.camera_model.project3dToPixel((point_camera.x, point_camera.y, point_camera.z))
+
+                    if u < 0 or u >= self.camera_model.width or v < 0 or v >= self.camera_model.height:
+                        continue
+
+                    # calculate radius of the bulb in pixels
+                    d = np.linalg.norm([point_camera.x, point_camera.y, point_camera.z])
+                    radius = self.camera_model.fx() * self.traffic_light_bulb_radius / d
+
+                    # calc extent for every signal then generate roi using min/max and rounding
+                    extent = radius * self.radius_to_roi_multiplier
+                    us.extend([u + extent, u - extent])
+                    vs.extend([v + extent, v - extent])
+
+                # not all signals were in image, take next traffic light
+                if len(us) < 6:
+                    continue
+                # round and clip against image limits
+                us = np.clip(np.round(np.array(us)), 0, self.camera_model.width - 1)
+                vs = np.clip(np.round(np.array(vs)), 0, self.camera_model.height - 1)
+                # extract one roi per traffic light
+                min_u = int(np.min(us))
+                max_u = int(np.max(us))
+                min_v = int(np.min(vs))
+                max_v = int(np.max(vs))
+                # check if roi is too small
+                if max_u - min_u < self.min_roi_width:
+                    continue
+                rois.append([int(stoplineId), plId, min_u, max_u, min_v, max_v])
+        return rois
+
 
     def create_roi_images(self, image, rois):
-        pass
+        roi_images = []
+        for _, _, min_u, max_u, min_v, max_v in rois:
+            # select the area from the image defined by min and max of u and v
+            image = image
+            # resize 128x128 pixels, use cv2.resize and linear interpolation
+            #add resulting image to roi_images by converting it to float image.astype(np.float32)
+            roi_images.append(image.astype(np.float32))
+
+        return np.stack(roi_images, axis=0) / 255.0
 
 
     def publish_roi_images(self, image, rois, classes, scores, image_time_stamp):
