@@ -12,6 +12,9 @@ from shapely import prepare
 from tf2_geometry_msgs import do_transform_vector3
 from scipy.interpolate import interp1d
 from numpy.lib.recfunctions import unstructured_to_structured
+from lanelet2.io import Origin, load
+from lanelet2.projection import UtmProjector
+from autoware_msgs.msg import TrafficLightResult
 
 class SimpleLocalPlanner:
 
@@ -22,11 +25,19 @@ class SimpleLocalPlanner:
         self.local_path_length = rospy.get_param("~local_path_length")
         self.transform_timeout = rospy.get_param("~transform_timeout")
         self.braking_safety_distance_obstacle = rospy.get_param("~braking_safety_distance_obstacle")
+        self.braking_safety_distance_stopline = rospy.get_param("~braking_safety_distance_stopline", self.braking_safety_distance_obstacle)
         self.braking_safety_distance_goal = rospy.get_param("~braking_safety_distance_goal")
         self.braking_reaction_time = rospy.get_param("braking_reaction_time")
         self.stopping_lateral_distance = rospy.get_param("stopping_lateral_distance")
         self.current_pose_to_car_front = rospy.get_param("current_pose_to_car_front")
         self.default_deceleration = rospy.get_param("default_deceleration")
+        self.tfl_maximum_deceleration = rospy.get_param("/planning/simple_local_planner/tfl_maximum_deceleration")
+        # Parameters related to lanelet2 map loading
+        coordinate_transformer = rospy.get_param("/localization/coordinate_transformer")
+        use_custom_origin = rospy.get_param("/localization/use_custom_origin")
+        utm_origin_lat = rospy.get_param("/localization/utm_origin_lat")
+        utm_origin_lon = rospy.get_param("/localization/utm_origin_lon")
+        lanelet2_map_name = rospy.get_param("~lanelet2_map_name")
 
         # Variables
         self.lock = threading.Lock()
@@ -37,6 +48,17 @@ class SimpleLocalPlanner:
         self.current_position = None
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer)
+        self.last_warn_time = rospy.Time.now()
+
+        # Load the map using Lanelet2
+        if coordinate_transformer == "utm":
+            projector = UtmProjector(Origin(utm_origin_lat, utm_origin_lon), use_custom_origin, False)
+        else:
+            raise RuntimeError('Only "utm" is supported for lanelet2 map loading')
+        lanelet2_map = load(lanelet2_map_name, projector)
+
+        self.stoplines = self.get_stoplines(lanelet2_map)
+        self.red_stoplines = set()
 
         # Publishers
         self.local_path_pub = rospy.Publisher('local_path', Lane, queue_size=1, tcp_nodelay=True)
@@ -46,7 +68,25 @@ class SimpleLocalPlanner:
         rospy.Subscriber('/localization/current_pose', PoseStamped, self.current_pose_callback, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber('/localization/current_velocity', TwistStamped, self.current_velocity_callback, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber('/detection/final_objects', DetectedObjectArray, self.detected_objects_callback, queue_size=1, buff_size=2**20, tcp_nodelay=True)
+        rospy.Subscriber('/detection/traffic_light_status', TrafficLightResult, self.traffic_light_status_callback, queue_size=1)
 
+
+    def get_stoplines(self, lanelet2_map):
+        stoplines = {}
+        for lanelet in lanelet2_map.laneletLayer:
+            if "stop_line" in lanelet.attributes:
+                stopline = lanelet.stopLine()
+                if stopline is not None:
+                    stoplineId = lanelet.id
+                    stopline_geometry = LineString([p.x, p.y] for p in stopline)
+                    stoplines[stoplineId] = stopline_geometry
+        rospy.loginfo_throttle(2, f"Extracted {len(stoplines)} stoplines from the map.")
+        return stoplines
+    
+    def traffic_light_status_callback(self, msg):
+        for result in msg.results:
+            if result.recognition_result_str == "Red":
+                self.red_stoplines.add(result.lane_id)
 
     def path_callback(self, msg):
 
@@ -94,6 +134,8 @@ class SimpleLocalPlanner:
             distance_to_velocity_interpolator = self.distance_to_velocity_interpolator
             current_position = self.current_position
             local_path_length = self.local_path_length
+            stoplines = self.stoplines
+            red_stoplines = self.red_stoplines
 
         # check if all the necessary variables are set
         if global_path_linestring is None or global_path_distances is None or distance_to_velocity_interpolator is None:
@@ -141,6 +183,31 @@ class SimpleLocalPlanner:
             adjust_stopping_distances.append(d_to_goal - self.braking_safety_distance_goal) # removed current_pose_to_car_front
             object_braking_distances.append(self.braking_safety_distance_goal)
             target_distances.append(d_to_goal - (self.current_pose_to_car_front + object_braking_distances[-1]))
+
+        stopping_point_distance = float('inf')
+        #check red stoplines
+        for stopline_id in red_stoplines:
+            if stopline_id in stoplines:
+                stopline = stoplines[stopline_id]
+                if stopline.intersects(local_path):
+                    intersect_point = local_path.intersection(stopline)
+                    d_to_stopline = global_path_linestring.project(intersect_point) - d_ego_from_path_start
+                    if d_to_stopline > 0:
+                        stopping_distance = max(0, d_to_stopline - self.braking_safety_distance_stopline)
+                        current_speed = self.current_speed
+                        required_deceleration = (current_speed**2)/(2*stopping_distance)
+                        if required_deceleration > self.tfl_maximum_deceleration:
+                            if (rospy.Time.now() - self.last_warn_time).to_sec() >= 3.0:
+                                rospy.loginfo(f"{rospy.get_name()} - Ignoring red traffic light, deceleration: {required_deceleration:.2f}")
+                                self.last_warn_time = rospy.Time.now()
+                            break
+                        else:
+                            rospy.loginfo_throttle(3, f"{rospy.get_name()} - Red stopline detected at distance: {d_to_stopline}")
+                            target_velocity = 0.0
+                            stopping_point_distance = stopping_distance
+                            local_path_to_wp = self.convert_local_path_to_waypoints(local_path, target_velocity)
+                            self.publish_local_path_wp(local_path_to_wp, msg.header.stamp, self.output_frame, 0.0, 0.0, False, stopping_point_distance)
+                            break
 
         for obj in msg.objects:
             obj_polygon = Polygon([(p.x, p.y) for p in obj.convex_hull.polygon.points])

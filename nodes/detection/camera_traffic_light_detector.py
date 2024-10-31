@@ -107,10 +107,8 @@ class CameraTrafficLightDetector:
         stoplines_on_path = []
 
         if local_path_msg.waypoints is not None:
-            #print(local_path_msg.waypoints)
             local_path = LineString([(p.pose.pose.position.x, p.pose.pose.position.y) for p in local_path_msg.waypoints])
             stoplines = self.tfl_stoplines.items()
-            #print("Test|stoplines: ", stoplines) # dictionary with id: LineString(coord)
             for k, v in stoplines:
                 if local_path.intersects(v):
                     stoplines_on_path.append(k) # key is the id?
@@ -147,13 +145,32 @@ class CameraTrafficLightDetector:
             #get the transform
             transform_to_frame = self.tf_buffer.lookup_transform(camera_image_msg.header.frame_id, transform_from_frame, camera_image_msg.header.stamp, rospy.Duration(self.transform_timeout))
             rois = self.calculate_roi_coordinates(stoplines_on_path, transform_to_frame)
-            print("Rois: ", rois)
-            # run model and do prediction
-            predictions = self.model.run(None, {'conv2d_1_input': rois})[0]
+            if rois:
+                roi_images = self.create_roi_images(image, rois)
+                # run model and do prediction
+                predictions = self.model.run(None, {'conv2d_1_input': roi_images})[0]
+                #extracting classes and scores
+                classes = np.argmax(predictions, axis=1)
+                scores = np.max(predictions, axis=1)
 
+                #TrafficLightResultArray
+                tfl_status = TrafficLightResultArray()
+                tfl_status.header.stamp = camera_image_msg.header.stamp
 
-        
-        #print(f"Stoplines on path: {stoplines_on_path}")
+                # extract results in sync with rois
+                for cl, (stoplineId, plId, _, _, _, _) in zip(classes, rois):
+
+                    tfl_result = TrafficLightResult()
+                    tfl_result.light_id = plId
+                    tfl_result.lane_id = stoplineId
+                    tfl_result.recognition_result = CLASSIFIER_RESULT_TO_TLRESULT[cl]
+                    tfl_result.recognition_result_str = CLASSIFIER_RESULT_TO_STRING[cl]
+
+                    tfl_status.results.append(tfl_result)
+
+                #publishing the classification results
+                self.tfl_status_pub.publish(tfl_status)
+                self.publish_roi_images(image, rois, classes, scores, camera_image_msg.header.stamp)
             
 
 
@@ -205,10 +222,11 @@ class CameraTrafficLightDetector:
         roi_images = []
         for _, _, min_u, max_u, min_v, max_v in rois:
             # select the area from the image defined by min and max of u and v
-            image = image
+            roi = image[min_v:max_v, min_u:max_u]
             # resize 128x128 pixels, use cv2.resize and linear interpolation
+            resized = cv2.resize(roi, (128, 128), interpolation=cv2.INTER_LINEAR)
             #add resulting image to roi_images by converting it to float image.astype(np.float32)
-            roi_images.append(image.astype(np.float32))
+            roi_images.append(resized.astype(np.float32))
 
         return np.stack(roi_images, axis=0) / 255.0
 
