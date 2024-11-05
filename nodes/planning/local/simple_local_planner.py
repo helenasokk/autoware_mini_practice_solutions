@@ -14,7 +14,7 @@ from scipy.interpolate import interp1d
 from numpy.lib.recfunctions import unstructured_to_structured
 from lanelet2.io import Origin, load
 from lanelet2.projection import UtmProjector
-from autoware_msgs.msg import TrafficLightResult
+from autoware_msgs.msg import TrafficLightResultArray
 
 class SimpleLocalPlanner:
 
@@ -32,7 +32,7 @@ class SimpleLocalPlanner:
         self.current_pose_to_car_front = rospy.get_param("current_pose_to_car_front")
         self.default_deceleration = rospy.get_param("default_deceleration")
         self.tfl_maximum_deceleration = rospy.get_param("/planning/simple_local_planner/tfl_maximum_deceleration")
-        # Parameters related to lanelet2 map loading
+        # Parameters related to lanelet2 map loading                rospy.logwarn_throttle
         coordinate_transformer = rospy.get_param("/localization/coordinate_transformer")
         use_custom_origin = rospy.get_param("/localization/use_custom_origin")
         utm_origin_lat = rospy.get_param("/localization/utm_origin_lat")
@@ -68,24 +68,23 @@ class SimpleLocalPlanner:
         rospy.Subscriber('/localization/current_pose', PoseStamped, self.current_pose_callback, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber('/localization/current_velocity', TwistStamped, self.current_velocity_callback, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber('/detection/final_objects', DetectedObjectArray, self.detected_objects_callback, queue_size=1, buff_size=2**20, tcp_nodelay=True)
-        rospy.Subscriber('/detection/traffic_light_status', TrafficLightResult, self.traffic_light_status_callback, queue_size=1)
+        rospy.Subscriber('/detection/traffic_light_status', TrafficLightResultArray, self.traffic_light_status_callback, queue_size=1)
 
 
     def get_stoplines(self, lanelet2_map):
         stoplines = {}
-        for lanelet in lanelet2_map.laneletLayer:
-            if "stop_line" in lanelet.attributes:
-                stopline = lanelet.stopLine()
-                if stopline is not None:
-                    stoplineId = lanelet.id
-                    stopline_geometry = LineString([p.x, p.y] for p in stopline)
-                    stoplines[stoplineId] = stopline_geometry
-        rospy.loginfo_throttle(2, f"Extracted {len(stoplines)} stoplines from the map.")
+        for line in lanelet2_map.lineStringLayer:
+            if line.attributes:
+                if line.attributes["type"] == "stop_line":
+                    # add stoline to dictionary and convert it to shapely LineString
+                    stoplines[line.id] = LineString([(p.x, p.y) for p in line])
+
         return stoplines
-    
+        
     def traffic_light_status_callback(self, msg):
+        self.red_stoplines = set()
         for result in msg.results:
-            if result.recognition_result_str == "Red":
+            if result.recognition_result_str == "RED cam":
                 self.red_stoplines.add(result.lane_id)
 
     def path_callback(self, msg):
@@ -187,27 +186,30 @@ class SimpleLocalPlanner:
         stopping_point_distance = float('inf')
         #check red stoplines
         for stopline_id in red_stoplines:
+            #rospy.logwarn_throttle(2, f"{red_stoplines} vs {stoplines}")
             if stopline_id in stoplines:
                 stopline = stoplines[stopline_id]
                 if stopline.intersects(local_path_buffer):
-                    intersect_point = local_path_buffer.intersection(stopline)
-                    d_to_stopline = global_path_linestring.project(intersect_point) - d_ego_from_path_start
+                    intersect_points = local_path_buffer.intersection(stopline)
+                    d_to_stopline = min([global_path_linestring.project(Point(intersect_point)) for intersect_point in intersect_points.coords]) - d_ego_from_path_start
                     if d_to_stopline > 0:
                         stopping_distance = max(0, d_to_stopline - self.braking_safety_distance_stopline)
                         current_speed = self.current_speed
-                        required_deceleration = (current_speed**2)/(2*stopping_distance)
-                        if required_deceleration > self.tfl_maximum_deceleration:
+                        if stopping_distance > 0 and (current_speed**2)/(2*stopping_distance) > self.tfl_maximum_deceleration:
                             if (rospy.Time.now() - self.last_warn_time).to_sec() >= 3.0:
-                                rospy.loginfo_throttle(2, f"{rospy.get_name()} - Ignoring red traffic light, deceleration: {required_deceleration:.2f}")
+                                rospy.loginfo_throttle(2, f"{rospy.get_name()} - Ignoring red traffic light, deceleration: {(current_speed**2)/(2*stopping_distance):.2f}")
                                 self.last_warn_time = rospy.Time.now()
-                            break
+                            
                         else:
                             rospy.loginfo_throttle(3, f"{rospy.get_name()} - Red stopline detected at distance: {d_to_stopline}")
-                            target_velocity = 0.0
-                            stopping_point_distance = stopping_distance
-                            local_path_to_wp = self.convert_local_path_to_waypoints(local_path, target_velocity)
-                            self.publish_local_path_wp(local_path_to_wp, msg.header.stamp, self.output_frame, 0.0, 0.0, False, stopping_point_distance)
-                            break
+                            object_distances.append(d_to_stopline)
+                            object_velocities.append(0)
+                            adjust_stopping_distances.append(stopping_distance)
+
+                            object_braking_distances.append(self.braking_safety_distance_obstacle) 
+                            target_distance = d_to_stopline - (self.current_pose_to_car_front + object_braking_distances[-1]) # added self.current_pose_to_car_front and the last braking distance from object_braking_distances array
+                            target_distances.append(target_distance)
+                            
 
         for obj in msg.objects:
             obj_polygon = Polygon([(p.x, p.y) for p in obj.convex_hull.polygon.points])
