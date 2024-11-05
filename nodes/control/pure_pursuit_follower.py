@@ -31,7 +31,7 @@ class PurePursuitFollower:
     def path_callback(self, msg):
 
         if not msg.waypoints or len(msg.waypoints) < 2:
-            rospy.logwarn("Empty or invalid path. Stopping the car.")
+            rospy.logwarn_throttle(4, "Empty or invalid path. Stopping the car.")
             self.stop_requested = True
             return
         self.stop_requested = False

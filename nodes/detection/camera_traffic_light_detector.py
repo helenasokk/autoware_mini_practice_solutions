@@ -65,6 +65,7 @@ class CameraTrafficLightDetector:
         self.tfl_stoplines = None
         self.camera_model = None
         self.stoplines_on_path = None
+        self.transform_from_frame = None
 
         self.lock = threading.Lock()
         self.bridge = CvBridge()
@@ -133,15 +134,14 @@ class CameraTrafficLightDetector:
         traffic_light.header.stamp = camera_image_msg.header.stamp
         self.tfl_status_pub.publish(traffic_light)
         image = self.bridge.imgmsg_to_cv2(camera_image_msg,  desired_encoding='rgb8')
-        self.camera_model.rectifyImage(image, image)
-        self.publish_roi_images(image, [], [], [], camera_image_msg.header.stamp)
-        
+        if self.rectify_image:
+            self.camera_model.rectifyImage(image, image)        
 
         with self.lock:
             stoplines_on_path = self.stoplines_on_path
             transform_from_frame = self.transform_from_frame
 
-        if len(stoplines_on_path) != 0:
+        if transform_from_frame:
             #get the transform
             transform_to_frame = self.tf_buffer.lookup_transform(camera_image_msg.header.frame_id, transform_from_frame, camera_image_msg.header.stamp, rospy.Duration(self.transform_timeout))
             rois = self.calculate_roi_coordinates(stoplines_on_path, transform_to_frame)

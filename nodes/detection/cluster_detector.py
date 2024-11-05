@@ -39,7 +39,7 @@ class ClusterDetector:
         if 'label' in data.dtype.names:
             labels = data['label'].astype(np.int32)
         else:
-            rospy.logwarn("Label field is missing!")
+            rospy.logwarn_throttle(3, "Label field is missing!")
             return
         
         # check the frames
@@ -62,7 +62,7 @@ class ClusterDetector:
                 points = points.dot(tf_matrix.T)
                 
             except (TransformException, rospy.ROSTimeMovedBackwardsException) as e:
-                rospy.logwarn("%s - %s", rospy.get_name(), e)
+                rospy.logwarn_throttle(3, "%s - %s", rospy.get_name(), e)
                 return
         # creating the header
         header = Header()

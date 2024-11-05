@@ -42,7 +42,7 @@ class PointsClusterer:
             clustered_points = data[data['label'] != -1]
 
             if clustered_points.shape[0] == 0:
-                rospy.logwarn(f"{rospy.get_name()} No clustered points found after filtering noise.")
+                rospy.logwarn_throttle(3, f"{rospy.get_name()} No clustered points found after filtering noise.")
                 return
 
             # publish clustered points message

@@ -94,7 +94,7 @@ class SimpleLocalPlanner:
             global_path_linestring = None
             global_path_distances = None
             distance_to_velocity_interpolator = None
-            rospy.loginfo("%s - Empty global path received", rospy.get_name())
+            rospy.loginfo_throttle(3, "%s - Empty global path received", rospy.get_name())
 
         else:
             waypoints_xyz = np.array([(w.pose.pose.position.x, w.pose.pose.position.y, w.pose.pose.position.z) for w in msg.waypoints])
@@ -111,7 +111,7 @@ class SimpleLocalPlanner:
             # create interpolator
             distance_to_velocity_interpolator = interp1d(global_path_distances, velocities, kind='linear', bounds_error=False, fill_value=0.0)
 
-            rospy.loginfo("%s - Global path received with %i waypoints", rospy.get_name(), len(msg.waypoints))
+            rospy.loginfo_throttle(3, "%s - Global path received with %i waypoints", rospy.get_name(), len(msg.waypoints))
 
         with self.lock:
             self.global_path_linestring = global_path_linestring
@@ -140,7 +140,7 @@ class SimpleLocalPlanner:
         # check if all the necessary variables are set
         if global_path_linestring is None or global_path_distances is None or distance_to_velocity_interpolator is None:
             # publishing an empty local path
-            rospy.logwarn(f"{rospy.get_name()} - Missing necessary global path information.")
+            rospy.logwarn_throttle(3, f"{rospy.get_name()} - Missing necessary global path information.")
             self.publish_local_path_wp([], msg.header.stamp, self.output_frame, 0.0, 0.0, False, 0.0)
             return
         
@@ -189,8 +189,8 @@ class SimpleLocalPlanner:
         for stopline_id in red_stoplines:
             if stopline_id in stoplines:
                 stopline = stoplines[stopline_id]
-                if stopline.intersects(local_path):
-                    intersect_point = local_path.intersection(stopline)
+                if stopline.intersects(local_path_buffer):
+                    intersect_point = local_path_buffer.intersection(stopline)
                     d_to_stopline = global_path_linestring.project(intersect_point) - d_ego_from_path_start
                     if d_to_stopline > 0:
                         stopping_distance = max(0, d_to_stopline - self.braking_safety_distance_stopline)
@@ -198,7 +198,7 @@ class SimpleLocalPlanner:
                         required_deceleration = (current_speed**2)/(2*stopping_distance)
                         if required_deceleration > self.tfl_maximum_deceleration:
                             if (rospy.Time.now() - self.last_warn_time).to_sec() >= 3.0:
-                                rospy.loginfo(f"{rospy.get_name()} - Ignoring red traffic light, deceleration: {required_deceleration:.2f}")
+                                rospy.loginfo_throttle(2, f"{rospy.get_name()} - Ignoring red traffic light, deceleration: {required_deceleration:.2f}")
                                 self.last_warn_time = rospy.Time.now()
                             break
                         else:
@@ -226,7 +226,7 @@ class SimpleLocalPlanner:
                 try:
                     transform = self.tf_buffer.lookup_transform(self.output_frame, msg.header.frame_id, rospy.Time(), rospy.Duration(self.transform_timeout))
                 except TransformException as e:
-                    rospy.logwarn(f"{rospy.get_name()} - Transform lookup failed: {e}")
+                    rospy.logwarn_throttle(2, f"{rospy.get_name()} - Transform lookup failed: {e}")
                     transform = None
 
                 if transform is not None:
